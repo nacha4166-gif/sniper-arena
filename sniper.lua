@@ -1,5 +1,5 @@
 --------------------------------------------------------------------
--- SNIPER ARENA — v46 (public UI, English)
+-- SNIPER ARENA — v47 (public UI + discord copy)
 -- Xeno / Luau — ESP + lock-on, manual fire
 --------------------------------------------------------------------
 local Players    = game:GetService("Players")
@@ -10,8 +10,11 @@ local UIS        = game:GetService("UserInputService")
 local lp  = Players.LocalPlayer
 local cam = Workspace.CurrentCamera
 
-if _G.SNIPER46 and _G.SNIPER46.shutdown then
-    pcall(_G.SNIPER46.shutdown)
+local INVITE   = "https://discord.gg/psxrAqpX7"
+local INVITE_UI = "discord.gg/psxrAqpX7"
+
+if _G.SNIPER47 and _G.SNIPER47.shutdown then
+    pcall(_G.SNIPER47.shutdown)
 end
 
 local CFG = {
@@ -53,6 +56,7 @@ local State = {
     visibles  = 0,
     total     = 0,
     errors    = 0,
+    copyUntil = 0,
 }
 
 local UUID_PAT = "(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)"
@@ -75,7 +79,7 @@ local COL = {
 -- UI HELPERS
 --------------------------------------------------------------------
 local gui = Instance.new("ScreenGui")
-gui.Name = "SniperArena46"
+gui.Name = "SniperArena47"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 500
@@ -108,6 +112,13 @@ local function label(parent, text, size, font, color)
     l.TextYAlignment = Enum.TextYAlignment.Center
     l.Parent = parent
     return l
+end
+
+local function copyText(text)
+    local ok = pcall(function() setclipboard(text) end)
+    if ok then return true end
+    local ok2 = pcall(function() toclipboard(text) end)
+    return ok2
 end
 
 --------------------------------------------------------------------
@@ -196,12 +207,40 @@ targetSub.Position = UDim2.fromOffset(12, 42)
 targetSub.Size = UDim2.new(1, -24, 0, 16)
 
 --------------------------------------------------------------------
+-- DISCORD BAR
+--------------------------------------------------------------------
+local discordBar = Instance.new("TextButton")
+discordBar.Size = UDim2.new(1, 0, 0, 34)
+discordBar.BackgroundColor3 = COL.card
+discordBar.BackgroundTransparency = 0.35
+discordBar.BorderSizePixel = 0
+discordBar.AutoButtonColor = false
+discordBar.Text = ""
+discordBar.LayoutOrder = 3
+discordBar.Parent = root
+corner(discordBar, 8)
+local discordStroke = stroke(discordBar, COL.line, 1, 0.4)
+
+local discordTag = label(discordBar, "DISCORD", 9, Enum.Font.GothamBold, COL.dim)
+discordTag.Position = UDim2.fromOffset(12, 0)
+discordTag.Size = UDim2.fromOffset(64, 34)
+
+local discordValue = label(discordBar, INVITE_UI, 11, Enum.Font.GothamMedium, COL.text)
+discordValue.Position = UDim2.fromOffset(72, 0)
+discordValue.Size = UDim2.new(1, -132, 1, 0)
+
+local copyBtn = label(discordBar, "COPY", 9, Enum.Font.GothamBold, COL.accent)
+copyBtn.Size = UDim2.fromOffset(52, 34)
+copyBtn.Position = UDim2.new(1, -58, 0, 0)
+copyBtn.TextXAlignment = Enum.TextXAlignment.Center
+
+--------------------------------------------------------------------
 -- TOGGLES
 --------------------------------------------------------------------
 local toggles = Instance.new("Frame")
 toggles.Size = UDim2.new(1, 0, 0, 95)
 toggles.BackgroundTransparency = 1
-toggles.LayoutOrder = 3
+toggles.LayoutOrder = 4
 toggles.Parent = root
 
 local tList = Instance.new("UIListLayout")
@@ -262,9 +301,9 @@ end
 --------------------------------------------------------------------
 -- FOOTER
 --------------------------------------------------------------------
-local footer = label(root, "F1 hide   F2 lock   F3 esp   F5 mark dead", 10, Enum.Font.GothamMedium, COL.dim)
+local footer = label(root, "F1 hide   F2 lock   F3 esp   F4 discord   F5 mark", 10, Enum.Font.GothamMedium, COL.dim)
 footer.Size = UDim2.new(1, 0, 0, 14)
-footer.LayoutOrder = 4
+footer.LayoutOrder = 5
 footer.TextXAlignment = Enum.TextXAlignment.Center
 
 --------------------------------------------------------------------
@@ -749,7 +788,7 @@ end
 --------------------------------------------------------------------
 -- UI REFRESH
 --------------------------------------------------------------------
-local function refreshUi()
+local function refreshUi(now)
     local t = State.target
 
     if t then
@@ -767,7 +806,32 @@ local function refreshUi()
         cardStroke.Transparency = 0.25
         dot.BackgroundColor3 = State.errors > 0 and COL.danger or COL.off
     end
+
+    if now < State.copyUntil then
+        copyBtn.Text = "COPIED"
+        copyBtn.TextColor3 = COL.accent
+        discordStroke.Color = COL.accent
+        discordStroke.Transparency = 0.2
+    else
+        copyBtn.Text = "COPY"
+        copyBtn.TextColor3 = COL.accent
+        discordStroke.Color = COL.line
+        discordStroke.Transparency = 0.4
+    end
 end
+
+--------------------------------------------------------------------
+-- DISCORD COPY
+--------------------------------------------------------------------
+local function copyInvite()
+    local ok = copyText(INVITE)
+    State.copyUntil = os.clock() + 1.5
+    if not ok then
+        discordValue.Text = INVITE
+    end
+end
+
+discordBar.MouseButton1Click:Connect(copyInvite)
 
 --------------------------------------------------------------------
 -- LOOP
@@ -828,7 +892,7 @@ local function onRender(dt)
 
         if now - lastUi >= 0.1 then
             lastUi = now
-            refreshUi()
+            refreshUi(now)
         end
     end)
 
@@ -837,8 +901,8 @@ local function onRender(dt)
     end
 end
 
-pcall(function() RunService:UnbindFromRenderStep("SniperArena46") end)
-RunService:BindToRenderStep("SniperArena46", 201, onRender)
+pcall(function() RunService:UnbindFromRenderStep("SniperArena47") end)
+RunService:BindToRenderStep("SniperArena47", 201, onRender)
 
 --------------------------------------------------------------------
 -- TOGGLES
@@ -895,6 +959,8 @@ UIS.InputBegan:Connect(function(input, gp)
     elseif k == Enum.KeyCode.F3 then
         CFG.ESP = not CFG.ESP
         for _, p in ipairs(painters) do p() end
+    elseif k == Enum.KeyCode.F4 then
+        copyInvite()
     elseif k == Enum.KeyCode.F5 then
         local t = State.target
         if t then
@@ -913,7 +979,7 @@ end)
 -- SHUTDOWN
 --------------------------------------------------------------------
 local function shutdown()
-    pcall(function() RunService:UnbindFromRenderStep("SniperArena46") end)
+    pcall(function() RunService:UnbindFromRenderStep("SniperArena47") end)
     pcall(function() gui:Destroy() end)
     if DrawingOk then
         for _, b in pairs(boxes) do
@@ -923,7 +989,7 @@ local function shutdown()
     end
 end
 
-_G.SNIPER46 = { shutdown = shutdown }
+_G.SNIPER47 = { shutdown = shutdown }
 
 --------------------------------------------------------------------
 -- START
@@ -937,4 +1003,4 @@ end
 buildRagdolls(os.clock())
 buildSigs()
 evaluate(os.clock())
-refreshUi()
+refreshUi(os.clock())
