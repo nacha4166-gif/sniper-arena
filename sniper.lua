@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v49 (keyless, Luau / Xeno)
+  SNIPER ARENA — v50 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -15,6 +15,10 @@
     - bots and NPCs are targeted again, not just real players
     - a dead body is dropped the instant its Humanoid fires Died
     - corpse memory: a body seen dead is skipped for 20 s
+  v50:
+    - ESP has its own list: everything alive, walls included, no FOV cone, bots included
+    - lock-on keeps its FOV cone and line-of-sight rule, separate from the ESP
+    - corpses filtered on name, Humanoid state, lost RootPart and death spots
 --------------------------------------------------------------------
 ]]
 
@@ -483,13 +487,35 @@ end
 --------------------------------------------------------------------
 -- GAME HELPERS
 --------------------------------------------------------------------
+local DEAD_STATES = {
+    [Enum.HumanoidStateType.Dead] = true,
+    [Enum.HumanoidStateType.Physics] = true,
+    [Enum.HumanoidStateType.FallingDown] = true,
+    [Enum.HumanoidStateType.PlatformStanding] = true,
+}
+
+-- games keep corpses around: as a ragdoll, as a renamed clone, or as a dummy
+-- that still reports full health. Those words are the ones they never use for a living body.
+local CORPSE_WORDS = { "ragdoll", "corpse", "dummy", "deadbody", "dead_body" }
+
+local function looksLikeCorpse(character)
+    local lower = string.lower(character.Name or "")
+    for _, word in ipairs(CORPSE_WORDS) do
+        if string.find(lower, word, 1, true) then return true end
+    end
+    return false
+end
+
 local function isAlive(character)
+    if not character or not character.Parent then return false end
+    if looksLikeCorpse(character) then return false end
     local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return false end
+    if not humanoid or humanoid.Parent ~= character then return false end
     if humanoid.Health <= 0 then return false end
-    local state = humanoid:GetState()
-    if state == Enum.HumanoidStateType.Dead then return false end
-    if state == Enum.HumanoidStateType.Physics then return false end
+    if DEAD_STATES[humanoid:GetState()] then return false end
+    -- a real character keeps its RootPart bound to the Humanoid; a corpse loses it
+    local rootPart = humanoid.RootPart
+    if not rootPart or not rootPart.Parent then return false end
     return true
 end
 
@@ -530,6 +556,31 @@ local function isCorpse(character)
     return true
 end
 
+-- games often spawn a fresh ragdoll model where the body fell. Remember the
+-- spot of every death for a few seconds and refuse anything standing there.
+local deathSpots = {}
+
+local function markDeathSpot(position)
+    if not position then return end
+    deathSpots[#deathSpots + 1] = { pos = position, at = os.clock() }
+    while #deathSpots > 30 do table.remove(deathSpots, 1) end
+end
+
+local function nearDeathSpot(character, rootPart)
+    if not rootPart then return false end
+    local now = os.clock()
+    local where = rootPart.Position
+    for index = #deathSpots, 1, -1 do
+        local spot = deathSpots[index]
+        if now - spot.at > 8 then
+            table.remove(deathSpots, index)
+        elseif (spot.pos - where).Magnitude <= 6 then
+            return true
+        end
+    end
+    return false
+end
+
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater = true
@@ -555,6 +606,7 @@ local State = {
     target = nil,
     copyUntil = 0,
     candidates = {},
+    espList = {},
     lastScan = 0,
     lastSweep = 0,
     characters = {},
@@ -604,6 +656,8 @@ local function watchDeath(character)
         return humanoid.Died:Connect(function()
             State.deathHooks[character] = nil
             markCorpse(character)
+            local dyingRoot = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
+            markDeathSpot(dyingRoot and dyingRoot.Position)
             if State.target and State.target.character == character then
                 State.target = nil
                 State.lastScan = 0
@@ -620,44 +674,72 @@ local function scanTargets()
     end
 
     local list = {}
+    local espList = {}
     local visibleCount = 0
     local totalCount = 0
+    local viewport = cam.ViewportSize
 
     for _, character in ipairs(State.characters) do
         if character.Parent and character ~= lp.Character and not isCorpse(character) and isAlive(character) then
-            totalCount = totalCount + 1
             local head, rootPart = partsOf(character)
+            if nearDeathSpot(character, rootPart) then
+                markCorpse(character, 8)
+            else
+            totalCount = totalCount + 1
             local aimPart = head or rootPart
             if aimPart and aimPart.Parent then
                 local origin = cam.CFrame.Position
                 local delta = aimPart.Position - origin
                 local distance = delta.Magnitude
                 if distance <= CFG.MaxDist then
-                    local dir = cam.CFrame.LookVector
-                    local unit = delta.Unit
-                    local angle = math.deg(math.acos(clamp(dir:Dot(unit), -1, 1)))
-                    local visible = (not CFG.VisibleOnly) or canSee(character, aimPart)
-                    if visible and angle <= CFG.Fov then
-                        visibleCount = visibleCount + 1
-                        watchDeath(character)
-                        list[#list + 1] = {
+                    watchDeath(character)
+                    -- ESP: everything alive around us, bots included, walls included.
+                    -- Only things actually in front of the camera get drawn, nothing behind the head.
+                    local headScreen, headOn = cam:WorldToViewportPoint(aimPart.Position)
+                    if headOn and headScreen.Z > 0
+                        and headScreen.X > -200 and headScreen.X < viewport.X + 200
+                        and headScreen.Y > -200 and headScreen.Y < viewport.Y + 200 then
+                        espList[#espList + 1] = {
                             character = character,
                             head = head,
                             root = rootPart,
                             aim = aimPart,
                             name = nameOf(character),
                             distance = distance,
-                            angle = angle,
-                            score = angle * 0.7 + (distance / math.max(CFG.MaxDist, 1)) * 30,
+                            score = distance,
                         }
+                    end
+
+                    -- Lock-on stays inside the FOV cone and respects line of sight
+                    local dir = cam.CFrame.LookVector
+                    local unit = delta.Unit
+                    local angle = math.deg(math.acos(clamp(dir:Dot(unit), -1, 1)))
+                    if angle <= CFG.Fov then
+                        local visible = (not CFG.VisibleOnly) or canSee(character, aimPart)
+                        if visible then
+                            visibleCount = visibleCount + 1
+                            list[#list + 1] = {
+                                character = character,
+                                head = head,
+                                root = rootPart,
+                                aim = aimPart,
+                                name = nameOf(character),
+                                distance = distance,
+                                angle = angle,
+                                score = angle * 0.7 + (distance / math.max(CFG.MaxDist, 1)) * 30,
+                            }
+                        end
                     end
                 end
             end
+            end -- nearDeathSpot guard
         end
     end
 
     table.sort(list, function(a, b) return a.score < b.score end)
+    table.sort(espList, function(a, b) return a.score < b.score end)
     State.candidates = list
+    State.espList = espList
     State.visible = visibleCount
     State.total = totalCount
     State.target = list[1]
@@ -691,7 +773,7 @@ local function renderEsp()
     if not drawingOk then return end
     local used = 0
 
-    for _, entry in ipairs(State.candidates) do
+    for _, entry in ipairs(State.espList) do
         local head, root = entry.head, entry.root
         if head and root then
             local headScreen, headOn = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
