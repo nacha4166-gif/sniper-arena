@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v48 (keyless, Luau / Xeno)
+  SNIPER ARENA — v49 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -11,6 +11,10 @@
     - line of sight raycast excludes the local character and the target itself
     - adaptive scan rate: fast when targets exist, lazy when empty
     - manual fire only. The script never clicks for you.
+  v49:
+    - bots and NPCs are targeted again, not just real players
+    - a dead body is dropped the instant its Humanoid fires Died
+    - corpse memory: a body seen dead is skipped for 20 s
 --------------------------------------------------------------------
 ]]
 
@@ -39,10 +43,13 @@ local CFG = {
     Smooth      = 14,     -- higher = snappier
     MaxDist     = 4000,   -- studs
     BoxFill     = false,
+    IncludeBots = true,
     UiVisible   = true,
     ScanFast    = 0.10,
     ScanSlow    = 0.30,
     MaxTargets  = 40,
+    BotScan     = 1.5,
+    CorpseHold  = 20,
 }
 
 local CONFIG_FILE = "sniper48.json"
@@ -378,6 +385,7 @@ makeToggle(2, "ESP", function() return CFG.Esp end, function(v) CFG.Esp = v end)
 makeToggle(3, "Line of Sight", function() return CFG.VisibleOnly end, function(v) CFG.VisibleOnly = v end)
 makeToggle(4, "FOV Circle", function() return CFG.FovCircle end, function(v) CFG.FovCircle = v end)
 makeToggle(5, "Rotate Body", function() return CFG.RotateBody end, function(v) CFG.RotateBody = v end)
+makeToggle(6, "Include Bots", function() return CFG.IncludeBots end, function(v) CFG.IncludeBots = v end)
 
 local sliders = Instance.new("Frame")
 sliders.Size = UDim2.new(1, 0, 0, 0)
@@ -500,7 +508,26 @@ end
 local function nameOf(character)
     local player = Players:GetPlayerFromCharacter(character)
     if player then return player.DisplayName ~= "" and player.DisplayName or player.Name end
-    return character.Name
+    local name = character.Name or "bot"
+    if #name >= 32 and name:match("^%x%x%x%x%x%x%x%x-") then return "bot" end
+    if #name > 20 then return string.sub(name, 1, 18) .. ".." end
+    return name
+end
+
+local corpses = {}
+
+local function markCorpse(character, seconds)
+    if character then corpses[character] = os.clock() + (seconds or CFG.CorpseHold) end
+end
+
+local function isCorpse(character)
+    local expiry = corpses[character]
+    if not expiry then return false end
+    if not character.Parent or os.clock() > expiry then
+        corpses[character] = nil
+        return false
+    end
+    return true
 end
 
 local rayParams = RaycastParams.new()
@@ -529,40 +556,100 @@ local State = {
     copyUntil = 0,
     candidates = {},
     lastScan = 0,
+    lastSweep = 0,
+    characters = {},
+    deathHooks = {},
 }
 
-local function scanTargets()
-    local list = {}
-    local visibleCount = 0
-
+--------------------------------------------------------------------
+-- CHARACTER SWEEP (players + bots)
+--------------------------------------------------------------------
+local function sweepCharacters()
+    local found, seen = {}, {}
     for _, other in ipairs(Players:GetPlayers()) do
         if other ~= lp then
             local character = other.Character
-            if character and character.Parent and isAlive(character) then
-                local head, rootPart = partsOf(character)
-                local aimPart = head or rootPart
-                if aimPart then
-                    local origin = cam.CFrame.Position
-                    local delta = aimPart.Position - origin
-                    local distance = delta.Magnitude
-                    if distance <= CFG.MaxDist then
-                        local dir = cam.CFrame.LookVector
-                        local unit = delta.Unit
-                        local angle = math.deg(math.acos(clamp(dir:Dot(unit), -1, 1)))
-                        local visible = (not CFG.VisibleOnly) or canSee(character, aimPart)
-                        if visible and angle <= CFG.Fov then
-                            visibleCount = visibleCount + 1
-                            list[#list + 1] = {
-                                character = character,
-                                head = head,
-                                root = rootPart,
-                                aim = aimPart,
-                                name = nameOf(character),
-                                distance = distance,
-                                angle = angle,
-                                score = angle * 0.7 + (distance / math.max(CFG.MaxDist, 1)) * 30,
-                            }
-                        end
+            if character and character.Parent then
+                found[#found + 1] = character
+                seen[character] = true
+            end
+        end
+    end
+    if CFG.IncludeBots then
+        local ok = pcall(function()
+            for _, descendant in ipairs(Workspace:GetDescendants()) do
+                if descendant:IsA("Humanoid") then
+                    local model = descendant.Parent
+                    if model and not seen[model] and model ~= lp.Character then
+                        seen[model] = true
+                        found[#found + 1] = model
+                    end
+                end
+            end
+        end)
+        if not ok then
+            State.errors = State.errors + 1
+        end
+    end
+    State.characters = found
+    State.lastSweep = os.clock()
+    return found
+end
+
+local function watchDeath(character)
+    if State.deathHooks[character] then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local ok, connection = pcall(function()
+        return humanoid.Died:Connect(function()
+            State.deathHooks[character] = nil
+            markCorpse(character)
+            if State.target and State.target.character == character then
+                State.target = nil
+                State.lastScan = 0
+            end
+        end)
+    end)
+    if ok then State.deathHooks[character] = connection end
+end
+
+local function scanTargets()
+    local now = os.clock()
+    if now - State.lastSweep >= CFG.BotScan then
+        sweepCharacters()
+    end
+
+    local list = {}
+    local visibleCount = 0
+    local totalCount = 0
+
+    for _, character in ipairs(State.characters) do
+        if character.Parent and character ~= lp.Character and not isCorpse(character) and isAlive(character) then
+            totalCount = totalCount + 1
+            local head, rootPart = partsOf(character)
+            local aimPart = head or rootPart
+            if aimPart and aimPart.Parent then
+                local origin = cam.CFrame.Position
+                local delta = aimPart.Position - origin
+                local distance = delta.Magnitude
+                if distance <= CFG.MaxDist then
+                    local dir = cam.CFrame.LookVector
+                    local unit = delta.Unit
+                    local angle = math.deg(math.acos(clamp(dir:Dot(unit), -1, 1)))
+                    local visible = (not CFG.VisibleOnly) or canSee(character, aimPart)
+                    if visible and angle <= CFG.Fov then
+                        visibleCount = visibleCount + 1
+                        watchDeath(character)
+                        list[#list + 1] = {
+                            character = character,
+                            head = head,
+                            root = rootPart,
+                            aim = aimPart,
+                            name = nameOf(character),
+                            distance = distance,
+                            angle = angle,
+                            score = angle * 0.7 + (distance / math.max(CFG.MaxDist, 1)) * 30,
+                        }
                     end
                 end
             end
@@ -572,7 +659,7 @@ local function scanTargets()
     table.sort(list, function(a, b) return a.score < b.score end)
     State.candidates = list
     State.visible = visibleCount
-    State.total = math.max(#Players:GetPlayers() - 1, 0)
+    State.total = totalCount
     State.target = list[1]
     return list[1]
 end
@@ -727,6 +814,21 @@ local function onRender(dt)
         if now - State.lastScan >= interval then
             State.lastScan = now
             scanTargets()
+        end
+
+        -- a target that died or lost its hitbox is dropped on the spot
+        if State.target then
+            local t = State.target
+            local stillThere = t.character and t.character.Parent
+                and t.aim and t.aim.Parent
+                and not isCorpse(t.character)
+                and isAlive(t.character)
+            if not stillThere then
+                markCorpse(t.character)
+                State.target = nil
+                State.lastScan = 0
+                scanTargets()
+            end
         end
 
         -- filter ignored targets without rescanning
