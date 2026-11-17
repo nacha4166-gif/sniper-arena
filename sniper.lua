@@ -48,6 +48,7 @@ local CFG = {
     MaxDist     = 4000,   -- studs
     BoxFill     = false,
     IncludeBots = true,
+    Debug       = false,
     UiVisible   = true,
     ScanFast    = 0.10,
     ScanSlow    = 0.30,
@@ -422,10 +423,19 @@ for _, child in ipairs(sliders:GetChildren()) do
     end
 end
 
-local footer = label(root, "F1 hide   F2 lock   F3 esp   F4 discord   F5 ignore   F6 fov", 10, false, COL.dim)
+local footer = label(root, "F1 hide  F2 lock  F3 esp  F4 discord  F5 ignore  F6 fov  F7 debug", 10, false, COL.dim)
 footer.Size = UDim2.new(1, 0, 0, 14)
 footer.LayoutOrder = 6
 footer.TextXAlignment = Enum.TextXAlignment.Center
+
+-- debug: says out loud what every model in the map was judged to be
+local debugBox = label(root, "", 10, false, COL.dim)
+debugBox.Size = UDim2.new(1, 0, 0, 0)
+debugBox.AutomaticSize = Enum.AutomaticSize.Y
+debugBox.TextWrapped = true
+debugBox.TextYAlignment = Enum.TextYAlignment.Top
+debugBox.LayoutOrder = 7
+debugBox.Visible = false
 
 --------------------------------------------------------------------
 -- ESP DRAWINGS
@@ -496,7 +506,9 @@ local DEAD_STATES = {
 
 -- games keep corpses around: as a ragdoll, as a renamed clone, or as a dummy
 -- that still reports full health. Those words are the ones they never use for a living body.
-local CORPSE_WORDS = { "ragdoll", "corpse", "dummy", "deadbody", "dead_body" }
+-- only names a living body never carries. "dummy" is deliberately absent:
+-- plenty of games call their bots Dummy or BotDummy, and that filter was hiding them.
+local CORPSE_WORDS = { "ragdoll", "corpse", "deadbody", "dead_body" }
 
 local function looksLikeCorpse(character)
     local lower = string.lower(character.Name or "")
@@ -607,6 +619,8 @@ local State = {
     copyUntil = 0,
     candidates = {},
     espList = {},
+    report = {},
+    aliveCount = 0,
     lastScan = 0,
     lastSweep = 0,
     characters = {},
@@ -675,15 +689,39 @@ local function scanTargets()
 
     local list = {}
     local espList = {}
+    local report = {}
     local visibleCount = 0
     local totalCount = 0
     local viewport = cam.ViewportSize
 
     for _, character in ipairs(State.characters) do
-        if character.Parent and character ~= lp.Character and not isCorpse(character) and isAlive(character) then
+        local reason = nil
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not character.Parent then
+            reason = "gone"
+        elseif character == lp.Character then
+            reason = "self"
+        elseif isCorpse(character) then
+            reason = "corpse-memory"
+        elseif looksLikeCorpse(character) then
+            reason = "corpse-name"
+        elseif not humanoid then
+            reason = "no-humanoid"
+        elseif humanoid.Health <= 0 then
+            reason = "hp0"
+        elseif DEAD_STATES[humanoid:GetState()] then
+            reason = "state"
+        elseif not humanoid.RootPart or not humanoid.RootPart.Parent then
+            reason = "no-root"
+        end
+
+        if reason then
+            report[#report + 1] = string.format("%s  ·  %s", nameOf(character), reason)
+        else
             local head, rootPart = partsOf(character)
             if nearDeathSpot(character, rootPart) then
                 markCorpse(character, 8)
+                report[#report + 1] = string.format("%s  ·  death-spot", nameOf(character))
             else
             totalCount = totalCount + 1
             local aimPart = head or rootPart
@@ -708,6 +746,9 @@ local function scanTargets()
                             distance = distance,
                             score = distance,
                         }
+                        report[#report + 1] = string.format("%s  ·  esp %.0fm", nameOf(character), distance / 3.571)
+                    elseif not CFG.Debug then
+                        -- nothing to say when debug is off
                     end
 
                     -- Lock-on stays inside the FOV cone and respects line of sight
@@ -740,6 +781,8 @@ local function scanTargets()
     table.sort(espList, function(a, b) return a.score < b.score end)
     State.candidates = list
     State.espList = espList
+    State.report = report
+    State.aliveCount = #State.characters
     State.visible = visibleCount
     State.total = totalCount
     State.target = list[1]
@@ -839,6 +882,21 @@ local function refreshUi()
         cardStroke.Color = COL.line
         cardStroke.Transparency = 0.25
         dot.BackgroundColor3 = State.errors > 0 and COL.danger or COL.off
+    end
+
+    debugBox.Visible = CFG.Debug
+    if CFG.Debug then
+        local lines = {
+            string.format("models %d · alive %d · esp %d · aim %d",
+                State.aliveCount, State.total, #State.espList, #State.candidates),
+        }
+        for index = 1, math.min(#State.report, 12) do
+            lines[#lines + 1] = State.report[index]
+        end
+        if #State.report == 0 then
+            lines[#lines + 1] = "no model found at all"
+        end
+        debugBox.Text = table.concat(lines, "\n")
     end
 
     if os.clock() < State.copyUntil then
@@ -982,6 +1040,10 @@ local keyConnection = UIS.InputBegan:Connect(function(input, processed)
         CFG.FovCircle = not CFG.FovCircle
         for _, paint in ipairs(painters) do paint() end
         saveConfig()
+    elseif key == Enum.KeyCode.F7 then
+        CFG.Debug = not CFG.Debug
+        debugBox.Visible = CFG.Debug
+        print("[sniper48] debug " .. (CFG.Debug and "on" or "off"))
     end
 end)
 
