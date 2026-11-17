@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v51 (keyless, Luau / Xeno)
+  SNIPER ARENA — v52 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -22,6 +22,11 @@
   v51:
     - F7 debug overlay: every model in the map, with the reason it was kept or skipped
     - "dummy" removed from the corpse name filter, it was hiding bots named Dummy
+  v52:
+    - bots are found three ways: player characters, Humanoids, and head+body rigs with no Humanoid
+    - a Humanoid with no RootPart no longer rejects a bot, the rig itself is used
+    - corpse clones that copy a dead player's name are refused for 25 s
+    - F7 also prints the report to the executor console, and shows the sweep counters
 --------------------------------------------------------------------
 ]]
 
@@ -521,17 +526,46 @@ local function looksLikeCorpse(character)
     return false
 end
 
+-- a corpse clone keeps the name of the player it came from. Remember it and
+-- refuse any model carrying that name, since no living body answers to it.
+local deadNames = {}
+
+local function markDeadName(name)
+    if name and #name > 0 then deadNames[name] = os.clock() + 25 end
+end
+
+local function isDeadName(character)
+    if Players:GetPlayerFromCharacter(character) then return false end
+    local name = character.Name
+    if not name then return false end
+    local expiry = deadNames[name]
+    if not expiry then return false end
+    if os.clock() > expiry then
+        deadNames[name] = nil
+        return false
+    end
+    return true
+end
+
+local function hasBodyPart(character)
+    return character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+        or character.PrimaryPart
+end
+
 local function isAlive(character)
     if not character or not character.Parent then return false end
     if looksLikeCorpse(character) then return false end
     local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid or humanoid.Parent ~= character then return false end
-    if humanoid.Health <= 0 then return false end
-    if DEAD_STATES[humanoid:GetState()] then return false end
-    -- a real character keeps its RootPart bound to the Humanoid; a corpse loses it
-    local rootPart = humanoid.RootPart
-    if not rootPart or not rootPart.Parent then return false end
-    return true
+    if humanoid then
+        if humanoid.Health <= 0 then return false end
+        if DEAD_STATES[humanoid:GetState()] then return false end
+        -- bots often keep a Humanoid but no RootPart bound to it: fall back on the rig
+        return hasBodyPart(character) ~= nil
+    end
+    -- no Humanoid at all: some games ship bots as plain rigs, head + body only
+    return character:FindFirstChild("Head") ~= nil and hasBodyPart(character) ~= nil
 end
 
 local function partsOf(character)
@@ -635,6 +669,8 @@ local State = {
 --------------------------------------------------------------------
 local function sweepCharacters()
     local found, seen = {}, {}
+    local humanoids, rigs = 0, 0
+
     for _, other in ipairs(Players:GetPlayers()) do
         if other ~= lp then
             local character = other.Character
@@ -644,13 +680,24 @@ local function sweepCharacters()
             end
         end
     end
+
     if CFG.IncludeBots then
         local ok = pcall(function()
             for _, descendant in ipairs(Workspace:GetDescendants()) do
                 if descendant:IsA("Humanoid") then
+                    humanoids = humanoids + 1
                     local model = descendant.Parent
                     if model and not seen[model] and model ~= lp.Character then
                         seen[model] = true
+                        found[#found + 1] = model
+                    end
+                elseif descendant:IsA("BasePart") and descendant.Name == "Head" then
+                    local model = descendant.Parent
+                    if model and not seen[model] and model ~= lp.Character
+                        and (model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso")
+                             or model:FindFirstChild("UpperTorso")) then
+                        seen[model] = true
+                        rigs = rigs + 1
                         found[#found + 1] = model
                     end
                 end
@@ -660,6 +707,8 @@ local function sweepCharacters()
             State.errors = State.errors + 1
         end
     end
+
+    State.sweepInfo = string.format("sweep %d models (%d humanoid, %d rigs)", #found, humanoids, rigs)
     State.characters = found
     State.lastSweep = os.clock()
     return found
@@ -673,6 +722,7 @@ local function watchDeath(character)
         return humanoid.Died:Connect(function()
             State.deathHooks[character] = nil
             markCorpse(character)
+            markDeadName(character.Name)
             local dyingRoot = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
             markDeathSpot(dyingRoot and dyingRoot.Position)
             if State.target and State.target.character == character then
@@ -708,6 +758,8 @@ local function scanTargets()
             reason = "corpse-memory"
         elseif looksLikeCorpse(character) then
             reason = "corpse-name"
+        elseif isDeadName(character) then
+            reason = "corpse-name-match"
         elseif not humanoid then
             reason = "no-humanoid"
         elseif humanoid.Health <= 0 then
@@ -890,8 +942,9 @@ local function refreshUi()
     debugBox.Visible = CFG.Debug
     if CFG.Debug then
         local lines = {
-            string.format("models %d · alive %d · esp %d · aim %d",
-                State.aliveCount, State.total, #State.espList, #State.candidates),
+            string.format("models %d · alive %d · esp %d · aim %d · err %d",
+                State.aliveCount, State.total, #State.espList, #State.candidates, State.errors or 0),
+            State.sweepInfo or "sweep -",
         }
         for index = 1, math.min(#State.report, 12) do
             lines[#lines + 1] = State.report[index]
@@ -900,6 +953,10 @@ local function refreshUi()
             lines[#lines + 1] = "no model found at all"
         end
         debugBox.Text = table.concat(lines, "\n")
+        if os.clock() - (State.lastPrint or 0) > 2.5 then
+            State.lastPrint = os.clock()
+            print("[sniper48] " .. table.concat(lines, " | "))
+        end
     end
 
     if os.clock() < State.copyUntil then
