@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v57 (keyless, Luau / Xeno)
+  SNIPER ARENA — v58 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -45,6 +45,10 @@
   v57:
     - lock-on is player-only by request: bot rigs never steal the camera
     - ESP still draws everyone, bots included, through walls
+  v58:
+    - teammates never take the lock: Roblox Team, then Team attributes, then a name list
+    - CFG.Allies holds exact names, CFG.IgnoreAllies switches the whole rule off
+    - ESP keeps drawing teammates, it is a box, not a trigger
 --------------------------------------------------------------------
 ]]
 
@@ -74,6 +78,8 @@ local CFG = {
     MaxDist     = 4000,   -- studs
     BoxFill     = false,
     IncludeBots = true,
+    IgnoreAllies = true,  -- never lock onto a teammate
+    Allies      = {},     -- exact names to treat as teammates, e.g. { "FriendName" }
     Debug       = false,
     UiVisible   = true,
     ScanFast    = 0.10,
@@ -644,6 +650,34 @@ local function nameOf(character)
     return name
 end
 
+-- A teammate must never eat the lock. Roblox teams first, then any Team
+-- attribute the game sets, then a hand-written name list in the config.
+local function isAlly(character)
+    if not CFG.IgnoreAllies then return false end
+    local player = Players:GetPlayerFromCharacter(character)
+    if not player then return false end
+
+    if lp.Team ~= nil and player.Team == lp.Team then return true end
+
+    for _, key in ipairs({ "Team", "team", "TeamName", "teamName", "TeamId", "teamId" }) do
+        local mine, theirs = lp:GetAttribute(key), player:GetAttribute(key)
+        if mine ~= nil and theirs ~= nil and mine == theirs then return true end
+        local myBody, theirBody = lp.Character, player.Character
+        if myBody and theirBody then
+            local mineC, theirsC = myBody:GetAttribute(key), theirBody:GetAttribute(key)
+            if mineC ~= nil and theirsC ~= nil and mineC == theirsC then return true end
+        end
+    end
+
+    for _, name in ipairs(CFG.Allies or {}) do
+        local lowered = string.lower(tostring(name))
+        if lowered == string.lower(player.Name) then return true end
+        if player.DisplayName and lowered == string.lower(player.DisplayName) then return true end
+    end
+
+    return false
+end
+
 local corpses = {}
 
 local function markCorpse(character, seconds)
@@ -852,6 +886,7 @@ local function scanTargets()
     for _, character in ipairs(State.characters) do
         local reason = nil
         local isPlayerModel = Players:GetPlayerFromCharacter(character) ~= nil
+        local ally = isAlly(character)
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         if not character.Parent then
             reason = "gone"
@@ -887,8 +922,8 @@ local function scanTargets()
             else
             totalCount = totalCount + 1
             local aimPart = head or rootPart
-            -- lock-on is for real players only: bot rigs never take a camera lock
-            if isPlayerModel and aimPart and aimPart.Parent then
+            -- lock-on is for real players only, and never for a teammate
+            if isPlayerModel and not ally and aimPart and aimPart.Parent then
                 local origin = cam.CFrame.Position
                 local delta = aimPart.Position - origin
                 local distance = delta.Magnitude
