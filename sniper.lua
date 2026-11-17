@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v58 (keyless, Luau / Xeno)
+  FREEDOM — v59 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -49,6 +49,13 @@
     - teammates never take the lock: Roblox Team, then Team attributes, then a name list
     - CFG.Allies holds exact names, CFG.IgnoreAllies switches the whole rule off
     - ESP keeps drawing teammates, it is a box, not a trigger
+  v59 - Freedom:
+    - tabbed menu: AIM / VISUALS / MISC / CONFIG, sidebar like the desktop build
+    - six colour presets cycled by clicking a swatch row, applied live
+    - ESP split into box / name / distance / health bar / head dot / snapline
+    - health bar shaded green, amber, red on the Humanoid ratio
+    - config file renamed freedom.json, old sniper48.json still read once
+    - F9 toggles the snapline, F5 ignores the current target
 --------------------------------------------------------------------
 ]]
 
@@ -77,6 +84,14 @@ local CFG = {
     Smooth      = 14,     -- higher = snappier
     MaxDist     = 4000,   -- studs
     BoxFill     = false,
+    EspName     = true,
+    EspHealth   = true,
+    EspDist     = true,
+    EspHeadDot  = true,
+    EspSnapline = false,
+    ColorBox    = 1,      -- index into PALETTES
+    ColorText   = 6,
+    ColorSnapline = 3,
     IncludeBots = true,
     IgnoreAllies = true,  -- never lock onto a teammate
     Allies      = {},     -- exact names to treat as teammates, e.g. { "FriendName" }
@@ -89,7 +104,8 @@ local CFG = {
     CorpseHold  = 20,
 }
 
-local CONFIG_FILE = "sniper48.json"
+local CONFIG_FILE = "freedom.json"
+local LEGACY_FILE = "sniper48.json"
 
 local function saveConfig()
     if not writefile then return end
@@ -101,9 +117,12 @@ end
 
 local function loadConfig()
     if not (isfile and readfile) then return end
-    if not isfile(CONFIG_FILE) then return end
+    local source = CONFIG_FILE
+    if not isfile(source) then
+        if isfile(LEGACY_FILE) then source = LEGACY_FILE else return end
+    end
     local ok, data = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(readfile(CONFIG_FILE))
+        return game:GetService("HttpService"):JSONDecode(readfile(source))
     end)
     if ok and type(data) == "table" then
         for key, value in pairs(data) do
@@ -128,6 +147,21 @@ local COL = {
     danger = Color3.fromRGB(255, 96, 96),
 }
 
+-- six presets, one per click on a swatch row
+local PALETTES = {
+    Color3.fromRGB(235, 64, 64),     -- red
+    Color3.fromRGB(124, 255, 138),   -- green
+    Color3.fromRGB(96, 200, 235),    -- cyan
+    Color3.fromRGB(255, 205, 96),    -- amber
+    Color3.fromRGB(196, 132, 255),   -- violet
+    Color3.fromRGB(240, 244, 250),   -- white
+}
+
+local function palColor(index)
+    local i = math.floor(tonumber(index) or 1)
+    return PALETTES[((i - 1) % #PALETTES) + 1]
+end
+
 local DISCORD = "discord.gg/psxrAqpX7"
 
 local function clamp(v, lo, hi)
@@ -140,7 +174,7 @@ end
 -- GUI
 --------------------------------------------------------------------
 local gui = Instance.new("ScreenGui")
-gui.Name = "SniperArena48"
+gui.Name = "Freedom59"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 500
@@ -175,126 +209,197 @@ local function label(parent, text, size, bold, color)
     return l
 end
 
+-- late-bound hooks: the ignore toggle and the dump live further down the file
+local ignoreRef, dumpWorldRef
+
 local root = Instance.new("Frame")
-root.Name = "SA_Main"
-root.Size = UDim2.fromOffset(304, 0)
+root.Name = "FD_Main"
+root.Size = UDim2.fromOffset(432, 452)
 root.Position = UDim2.fromOffset(16, 16)
-root.AutomaticSize = Enum.AutomaticSize.Y
 root.BackgroundColor3 = COL.bg
 root.BackgroundTransparency = 0.06
 root.BorderSizePixel = 0
-root.ClipsDescendants = false
+root.ClipsDescendants = true
 root.Parent = gui
 corner(root, 14)
 stroke(root, COL.line, 1, 0.45)
 
-local pad = Instance.new("UIPadding")
-pad.PaddingTop = UDim.new(0, 12)
-pad.PaddingBottom = UDim.new(0, 12)
-pad.PaddingLeft = UDim.new(0, 12)
-pad.PaddingRight = UDim.new(0, 12)
-pad.Parent = root
-
-local stack = Instance.new("UIListLayout")
-stack.SortOrder = Enum.SortOrder.LayoutOrder
-stack.Padding = UDim.new(0, 10)
-stack.Parent = root
-
--- header
+-- header : drag handle
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 30)
-header.BackgroundTransparency = 1
-header.LayoutOrder = 1
+header.Size = UDim2.new(1, 0, 0, 38)
+header.BackgroundColor3 = COL.card
+header.BackgroundTransparency = 0.4
+header.BorderSizePixel = 0
 header.Parent = root
+corner(header, 14)
 
 local dot = Instance.new("Frame")
 dot.Size = UDim2.fromOffset(8, 8)
-dot.Position = UDim2.fromOffset(0, 11)
+dot.Position = UDim2.fromOffset(16, 15)
 dot.BackgroundColor3 = COL.off
 dot.BorderSizePixel = 0
 dot.Parent = header
 corner(dot, 4)
 
-local title = label(header, "SNIPER ARENA", 15, true)
-title.Position = UDim2.fromOffset(16, 0)
-title.Size = UDim2.new(1, -100, 0, 30)
+local title = label(header, "FREEDOM", 16, true)
+title.Position = UDim2.fromOffset(32, 0)
+title.Size = UDim2.new(1, -150, 0, 38)
 
 local chip = Instance.new("Frame")
-chip.Size = UDim2.fromOffset(84, 20)
-chip.Position = UDim2.new(1, -84, 0, 5)
+chip.Size = UDim2.fromOffset(104, 20)
+chip.Position = UDim2.new(1, -116, 0, 9)
 chip.BackgroundColor3 = COL.card
 chip.BorderSizePixel = 0
 chip.Parent = header
 corner(chip, 10)
-local chipText = label(chip, "MANUAL FIRE", 9, true, COL.dim)
+local chipText = label(chip, "v59  MANUAL", 9, true, COL.dim)
 chipText.Size = UDim2.fromScale(1, 1)
 chipText.TextXAlignment = Enum.TextXAlignment.Center
 
 -- status card
 local card = Instance.new("Frame")
-card.Size = UDim2.new(1, 0, 0, 58)
+card.Size = UDim2.new(1, -24, 0, 54)
+card.Position = UDim2.fromOffset(12, 46)
 card.BackgroundColor3 = COL.card
 card.BackgroundTransparency = 0.25
 card.BorderSizePixel = 0
-card.LayoutOrder = 2
 card.Parent = root
 corner(card, 9)
 local cardStroke = stroke(card, COL.line, 1, 0.3)
 
 local targetName = label(card, "none", 14, true)
-targetName.Position = UDim2.fromOffset(12, 8)
+targetName.Position = UDim2.fromOffset(12, 6)
 targetName.Size = UDim2.new(1, -24, 0, 20)
 local targetSub = label(card, "0 visible / 0", 11, false, COL.dim)
-targetSub.Position = UDim2.fromOffset(12, 30)
+targetSub.Position = UDim2.fromOffset(12, 28)
 targetSub.Size = UDim2.new(1, -24, 0, 18)
 
--- discord bar
-local discordBar = Instance.new("TextButton")
-discordBar.Size = UDim2.new(1, 0, 0, 32)
-discordBar.BackgroundColor3 = COL.card
-discordBar.BackgroundTransparency = 0.35
-discordBar.BorderSizePixel = 0
-discordBar.AutoButtonColor = false
-discordBar.Text = ""
-discordBar.LayoutOrder = 3
-discordBar.Parent = root
-corner(discordBar, 8)
-local discordStroke = stroke(discordBar, COL.line, 1, 0.4)
-local discordLabel = label(discordBar, DISCORD, 11, true, COL.accent)
-discordLabel.Position = UDim2.fromOffset(12, 0)
-discordLabel.Size = UDim2.new(1, -70, 1, 0)
-local copyBtn = label(discordBar, "COPY", 10, true, COL.accent)
-copyBtn.Position = UDim2.new(1, -54, 0, 0)
-copyBtn.Size = UDim2.fromOffset(42, 32)
-copyBtn.TextXAlignment = Enum.TextXAlignment.Center
+-- sidebar
+local SIDE_W = 96
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.fromOffset(SIDE_W, 300)
+sidebar.Position = UDim2.fromOffset(12, 108)
+sidebar.BackgroundColor3 = COL.card
+sidebar.BackgroundTransparency = 0.55
+sidebar.BorderSizePixel = 0
+sidebar.Parent = root
+corner(sidebar, 10)
 
--- toggles
-local toggles = Instance.new("Frame")
-toggles.Size = UDim2.new(1, 0, 0, 0)
-toggles.AutomaticSize = Enum.AutomaticSize.Y
-toggles.BackgroundTransparency = 1
-toggles.LayoutOrder = 4
-toggles.Parent = root
-local tList = Instance.new("UIListLayout")
-tList.Padding = UDim.new(0, 4)
-tList.SortOrder = Enum.SortOrder.LayoutOrder
-tList.Parent = toggles
+local sideList = Instance.new("UIListLayout")
+sideList.Padding = UDim.new(0, 4)
+sideList.SortOrder = Enum.SortOrder.LayoutOrder
+sideList.Parent = sidebar
+
+local sidePad = Instance.new("UIPadding")
+sidePad.PaddingTop = UDim.new(0, 6)
+sidePad.PaddingLeft = UDim.new(0, 6)
+sidePad.PaddingRight = UDim.new(0, 6)
+sidePad.Parent = sidebar
+
+-- content
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -(SIDE_W + 36), 0, 300)
+content.Position = UDim2.fromOffset(SIDE_W + 24, 108)
+content.BackgroundTransparency = 1
+content.ClipsDescendants = true
+content.Parent = root
+
+local pages, tabs = {}, {}
+local activePage = "aim"
+
+local function makePage(id)
+    local f = Instance.new("Frame")
+    f.Name = id
+    f.Size = UDim2.new(1, 0, 1, 0)
+    f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0
+    f.ClipsDescendants = true
+    f.Visible = false
+    f.Parent = content
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, 4)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Parent = f
+    pages[id] = f
+    return f
+end
+
+local pageAim = makePage("aim")
+local pageVisual = makePage("visual")
+local pageMisc = makePage("misc")
+local pageConfig = makePage("config")
 
 local painters = {}
 
-local function makeToggle(order, text, get, set)
-    local row = Instance.new("TextButton")
-    row.Size = UDim2.new(1, 0, 0, 28)
-    row.BackgroundColor3 = COL.card
-    row.BackgroundTransparency = 0.55
-    row.BorderSizePixel = 0
-    row.AutoButtonColor = false
-    row.Text = ""
-    row.LayoutOrder = order
-    row.Parent = toggles
-    corner(row, 7)
+local function selectTab(id)
+    activePage = id
+    for key, frame in pairs(pages) do
+        frame.Visible = (key == id)
+    end
+    for key, btn in pairs(tabs) do
+        local on = (key == id)
+        btn.BackgroundColor3 = on and COL.card or COL.bg
+        btn.BackgroundTransparency = on and 0.1 or 0.6
+        local bar = btn:FindFirstChild("Bar")
+        if bar then bar.Visible = on end
+        local lb = btn:FindFirstChildOfClass("TextLabel")
+        if lb then lb.TextColor3 = on and COL.text or COL.dim end
+    end
+end
 
-    local lab = label(row, text, 12, false)
+local function makeTab(order, id, text)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundColor3 = COL.bg
+    btn.BackgroundTransparency = 0.6
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Text = ""
+    btn.LayoutOrder = order
+    btn.Parent = sidebar
+    corner(btn, 7)
+
+    local bar = Instance.new("Frame")
+    bar.Name = "Bar"
+    bar.Size = UDim2.new(0, 3, 1, -14)
+    bar.Position = UDim2.fromOffset(0, 7)
+    bar.BackgroundColor3 = COL.accent
+    bar.BorderSizePixel = 0
+    bar.Visible = false
+    bar.Parent = btn
+    corner(bar, 2)
+
+    local lb = label(btn, text, 11, true, COL.dim)
+    lb.Position = UDim2.fromOffset(12, 0)
+    lb.Size = UDim2.new(1, -16, 1, 0)
+
+    btn.MouseButton1Click:Connect(function() selectTab(id) end)
+    tabs[id] = btn
+end
+
+makeTab(1, "aim", "AIM")
+makeTab(2, "visual", "VISUALS")
+makeTab(3, "misc", "MISC")
+makeTab(4, "config", "CONFIG")
+
+local function row(parent, order, height)
+    local r = Instance.new("TextButton")
+    r.Size = UDim2.new(1, 0, 0, height)
+    r.BackgroundColor3 = COL.card
+    r.BackgroundTransparency = 0.55
+    r.BorderSizePixel = 0
+    r.AutoButtonColor = false
+    r.Text = ""
+    r.LayoutOrder = order
+    r.Parent = parent
+    corner(r, 7)
+    return r
+end
+
+local function makeToggle(parent, order, text, get, set)
+    local r = row(parent, order, 28)
+
+    local lab = label(r, text, 12, false)
     lab.Position = UDim2.fromOffset(10, 0)
     lab.Size = UDim2.new(1, -60, 1, 0)
 
@@ -303,7 +408,7 @@ local function makeToggle(order, text, get, set)
     pill.Position = UDim2.new(1, -44, 0.5, -8)
     pill.BackgroundColor3 = COL.off
     pill.BorderSizePixel = 0
-    pill.Parent = row
+    pill.Parent = r
     corner(pill, 8)
 
     local knob = Instance.new("Frame")
@@ -321,7 +426,7 @@ local function makeToggle(order, text, get, set)
         lab.TextColor3 = on and COL.text or COL.dim
     end
 
-    row.MouseButton1Click:Connect(function()
+    r.MouseButton1Click:Connect(function()
         set(not get())
         paint()
         saveConfig()
@@ -331,21 +436,14 @@ local function makeToggle(order, text, get, set)
     paint()
 end
 
-local function makeSlider(order, text, min, max, get, set, format)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 40)
-    row.BackgroundColor3 = COL.card
-    row.BackgroundTransparency = 0.55
-    row.BorderSizePixel = 0
-    row.LayoutOrder = order
-    row.Parent = toggles
-    corner(row, 7)
+local function makeSlider(parent, order, text, min, max, get, set, format)
+    local r = row(parent, order, 40)
 
-    local name = label(row, text, 12, false)
+    local name = label(r, text, 12, false)
     name.Position = UDim2.fromOffset(10, 2)
     name.Size = UDim2.new(1, -80, 0, 16)
 
-    local valueLabel = label(row, "", 11, true, COL.accent)
+    local valueLabel = label(r, "", 11, true, COL.accent)
     valueLabel.Position = UDim2.new(1, -70, 0, 2)
     valueLabel.Size = UDim2.fromOffset(60, 16)
     valueLabel.TextXAlignment = Enum.TextXAlignment.Right
@@ -355,7 +453,7 @@ local function makeSlider(order, text, min, max, get, set, format)
     track.Position = UDim2.fromOffset(10, 24)
     track.BackgroundColor3 = COL.off
     track.BorderSizePixel = 0
-    track.Parent = row
+    track.Parent = r
     corner(track, 3)
 
     local fill = Instance.new("Frame")
@@ -384,9 +482,9 @@ local function makeSlider(order, text, min, max, get, set, format)
 
     local dragging = false
     local function apply(input)
-        local frame = track.AbsolutePosition
+        local origin = track.AbsolutePosition
         local width = math.max(track.AbsoluteSize.X, 1)
-        local t = clamp((input.Position.X - frame.X) / width, 0, 1)
+        local t = clamp((input.Position.X - origin.X) / width, 0, 1)
         set(min + (max - min) * t)
         paint()
     end
@@ -417,57 +515,133 @@ local function makeSlider(order, text, min, max, get, set, format)
     paint()
 end
 
-makeToggle(1, "Lock-On", function() return CFG.LockOn end, function(v) CFG.LockOn = v end)
-makeToggle(2, "ESP", function() return CFG.Esp end, function(v) CFG.Esp = v end)
-makeToggle(3, "Line of Sight", function() return CFG.VisibleOnly end, function(v) CFG.VisibleOnly = v end)
-makeToggle(4, "FOV Circle", function() return CFG.FovCircle end, function(v) CFG.FovCircle = v end)
-makeToggle(5, "Rotate Body", function() return CFG.RotateBody end, function(v) CFG.RotateBody = v end)
-makeToggle(6, "Include Bots", function() return CFG.IncludeBots end, function(v) CFG.IncludeBots = v end)
+local function makeButton(parent, order, text, onClick, color)
+    local r = row(parent, order, 30)
+    local lab = label(r, text, 12, true, color or COL.accent)
+    lab.Position = UDim2.fromOffset(10, 0)
+    lab.Size = UDim2.new(1, -20, 1, 0)
+    r.MouseButton1Click:Connect(onClick)
+    return r
+end
 
-local sliders = Instance.new("Frame")
-sliders.Size = UDim2.new(1, 0, 0, 0)
-sliders.AutomaticSize = Enum.AutomaticSize.Y
-sliders.BackgroundTransparency = 1
-sliders.LayoutOrder = 5
-sliders.Parent = root
-local sList = Instance.new("UIListLayout")
-sList.Padding = UDim.new(0, 4)
-sList.Parent = sliders
+local function makePalette(parent, order, text, key)
+    local r = row(parent, order, 28)
 
-makeSlider(1, "Smoothing", 4, 40,
+    local lab = label(r, text, 12, false)
+    lab.Position = UDim2.fromOffset(10, 0)
+    lab.Size = UDim2.new(1, -70, 1, 0)
+
+    local swatch = Instance.new("Frame")
+    swatch.Size = UDim2.fromOffset(28, 14)
+    swatch.Position = UDim2.new(1, -42, 0.5, -7)
+    swatch.BackgroundColor3 = palColor(CFG[key])
+    swatch.BorderSizePixel = 0
+    swatch.Parent = r
+    corner(swatch, 4)
+
+    r.MouseButton1Click:Connect(function()
+        CFG[key] = (math.floor(CFG[key]) % #PALETTES) + 1
+        swatch.BackgroundColor3 = palColor(CFG[key])
+        saveConfig()
+    end)
+end
+
+-- AIM page
+makeToggle(pageAim, 1, "Lock-On", function() return CFG.LockOn end, function(v) CFG.LockOn = v end)
+makeToggle(pageAim, 2, "Line of Sight", function() return CFG.VisibleOnly end, function(v) CFG.VisibleOnly = v end)
+makeToggle(pageAim, 3, "Rotate Body", function() return CFG.RotateBody end, function(v) CFG.RotateBody = v end)
+makeToggle(pageAim, 4, "Include Bots", function() return CFG.IncludeBots end, function(v) CFG.IncludeBots = v end)
+makeToggle(pageAim, 5, "FOV Circle", function() return CFG.FovCircle end, function(v) CFG.FovCircle = v end)
+makeSlider(pageAim, 6, "Smoothing", 4, 40,
     function() return CFG.Smooth end,
     function(v) CFG.Smooth = v end,
     function(v) return string.format("%.0f", v) end)
-makeSlider(2, "FOV", 5, 80,
+makeSlider(pageAim, 7, "FOV", 5, 80,
     function() return CFG.Fov end,
     function(v) CFG.Fov = v end,
     function(v) return string.format("%.0f°", v) end)
-makeSlider(3, "Max distance", 200, 6000,
+makeSlider(pageAim, 8, "Max distance", 200, 6000,
     function() return CFG.MaxDist end,
     function(v) CFG.MaxDist = v end,
     function(v) return string.format("%.0f", v) end)
 
--- move sliders under toggles
-sliders.Parent = toggles
-for _, child in ipairs(sliders:GetChildren()) do
-    if child:IsA("Frame") then
-        child.LayoutOrder = 100 + (child.LayoutOrder or 0)
-    end
-end
+-- VISUALS page
+makeToggle(pageVisual, 1, "ESP Box", function() return CFG.Esp end, function(v) CFG.Esp = v end)
+makeToggle(pageVisual, 2, "Box Fill", function() return CFG.BoxFill end, function(v) CFG.BoxFill = v end)
+makeToggle(pageVisual, 3, "Name", function() return CFG.EspName end, function(v) CFG.EspName = v end)
+makeToggle(pageVisual, 4, "Distance", function() return CFG.EspDist end, function(v) CFG.EspDist = v end)
+makeToggle(pageVisual, 5, "Health Bar", function() return CFG.EspHealth end, function(v) CFG.EspHealth = v end)
+makeToggle(pageVisual, 6, "Head Dot", function() return CFG.EspHeadDot end, function(v) CFG.EspHeadDot = v end)
+makeToggle(pageVisual, 7, "Snapline", function() return CFG.EspSnapline end, function(v) CFG.EspSnapline = v end)
+makePalette(pageVisual, 8, "Box Color", "ColorBox")
+makePalette(pageVisual, 9, "Text Color", "ColorText")
+makePalette(pageVisual, 10, "Snapline Color", "ColorSnapline")
 
-local footer = label(root, "F1 hide  F2 lock  F3 esp  F4 discord  F5 ignore  F6 fov  F7 debug", 10, false, COL.dim)
-footer.Size = UDim2.new(1, 0, 0, 14)
-footer.LayoutOrder = 6
+-- MISC page
+local discordBar = Instance.new("TextButton")
+discordBar.Size = UDim2.new(1, 0, 0, 32)
+discordBar.BackgroundColor3 = COL.card
+discordBar.BackgroundTransparency = 0.35
+discordBar.BorderSizePixel = 0
+discordBar.AutoButtonColor = false
+discordBar.Text = ""
+discordBar.LayoutOrder = 1
+discordBar.Parent = pageMisc
+corner(discordBar, 8)
+local discordStroke = stroke(discordBar, COL.line, 1, 0.4)
+local discordLabel = label(discordBar, DISCORD, 11, true, COL.accent)
+discordLabel.Position = UDim2.fromOffset(12, 0)
+discordLabel.Size = UDim2.new(1, -70, 1, 0)
+local copyBtn = label(discordBar, "COPY", 10, true, COL.accent)
+copyBtn.Position = UDim2.new(1, -54, 0, 0)
+copyBtn.Size = UDim2.fromOffset(42, 32)
+copyBtn.TextXAlignment = Enum.TextXAlignment.Center
+
+makeButton(pageMisc, 2, "Ignore Target   F5", function()
+    if ignoreRef then ignoreRef() end
+end, COL.dim)
+
+makeButton(pageMisc, 3, "Dump World   F8", function()
+    if dumpWorldRef then dumpWorldRef() end
+end, COL.dim)
+
+-- CONFIG page
+makeButton(pageConfig, 1, "Save Config", function() saveConfig() end)
+makeButton(pageConfig, 2, "Reload Config", function()
+    loadConfig()
+    for _, paint in ipairs(painters) do paint() end
+end)
+makeButton(pageConfig, 3, "Reset Defaults", function()
+    CFG.LockOn, CFG.Esp = true, true
+    CFG.VisibleOnly, CFG.FovCircle, CFG.RotateBody = true, true, false
+    CFG.IncludeBots, CFG.BoxFill = true, false
+    CFG.EspName, CFG.EspHealth, CFG.EspDist = true, true, true
+    CFG.EspHeadDot, CFG.EspSnapline = true, false
+    CFG.ColorBox, CFG.ColorText, CFG.ColorSnapline = 1, 6, 3
+    CFG.Fov, CFG.Smooth, CFG.MaxDist = 35, 14, 4000
+    for _, paint in ipairs(painters) do paint() end
+    saveConfig()
+end, COL.danger)
+
+local versionLine = label(pageConfig, "freedom.json  ·  built for Xeno", 10, false, COL.dim)
+versionLine.Size = UDim2.new(1, 0, 0, 16)
+versionLine.LayoutOrder = 4
+
+-- footer + debug
+local footer = label(root, "F1 hide  F2 lock  F3 esp  F5 ignore  F6 fov  F7 debug  F8 dump  F9 snapline", 10, false, COL.dim)
+footer.Position = UDim2.new(0, 12, 1, -22)
+footer.Size = UDim2.new(1, -24, 0, 14)
 footer.TextXAlignment = Enum.TextXAlignment.Center
 
--- debug: says out loud what every model in the map was judged to be
-local debugBox = label(root, "", 10, false, COL.dim)
+local debugBox = label(pageMisc, "", 10, false, COL.dim)
 debugBox.Size = UDim2.new(1, 0, 0, 0)
 debugBox.AutomaticSize = Enum.AutomaticSize.Y
 debugBox.TextWrapped = true
 debugBox.TextYAlignment = Enum.TextYAlignment.Top
-debugBox.LayoutOrder = 7
+debugBox.LayoutOrder = 4
 debugBox.Visible = false
+
+selectTab("aim")
 
 --------------------------------------------------------------------
 -- ESP DRAWINGS
@@ -503,13 +677,47 @@ local function boxAt(index)
         square.Thickness = 1
         square.Filled = false
         square.Transparency = 1
-        square.Color = COL.accent
+        square.Color = palColor(CFG.ColorBox)
+
         local text = Drawing.new("Text")
         text.Size = 13
         text.Center = true
         text.Outline = true
-        text.Color = Color3.fromRGB(230, 235, 240)
-        return { square = square, text = text }
+        text.Color = palColor(CFG.ColorText)
+
+        local barBg = Drawing.new("Square")
+        barBg.Filled = true
+        barBg.Thickness = 0
+        barBg.Color = Color3.fromRGB(8, 9, 12)
+        barBg.Transparency = 0.45
+
+        local barFill = Drawing.new("Square")
+        barFill.Filled = true
+        barFill.Thickness = 0
+        barFill.Color = Color3.fromRGB(96, 220, 128)
+        barFill.Transparency = 0.95
+
+        local headDot = Drawing.new("Circle")
+        headDot.Filled = true
+        headDot.Thickness = 1
+        headDot.NumSides = 12
+        headDot.Radius = 3
+        headDot.Color = palColor(CFG.ColorBox)
+        headDot.Transparency = 1
+
+        local snapLine = Drawing.new("Line")
+        snapLine.Thickness = 1
+        snapLine.Color = palColor(CFG.ColorSnapline)
+        snapLine.Transparency = 0.7
+
+        return {
+            square = square,
+            text = text,
+            barBg = barBg,
+            barFill = barFill,
+            headDot = headDot,
+            line = snapLine,
+        }
     end)
     if not ok or not made then
         drawingOk = false
@@ -522,8 +730,11 @@ end
 local function hideBox(index)
     local entry = boxCache[index]
     if not entry then return end
-    entry.square.Visible = false
-    entry.text.Visible = false
+    for _, item in pairs(entry) do
+        if type(item) == "table" or type(item) == "userdata" then
+            pcall(function() item.Visible = false end)
+        end
+    end
 end
 
 --------------------------------------------------------------------
@@ -840,9 +1051,9 @@ function dumpWorld()
             end
         end
     end)
-    print(string.format("[sniper48] dump %d model(s)%s", #rows, ok and "" or " — scan error"))
+    print(string.format("[freedom] dump %d model(s)%s", #rows, ok and "" or " — scan error"))
     for index = 1, math.min(#rows, 40) do
-        print("[sniper48] " .. rows[index])
+        print("[freedom] " .. rows[index])
     end
 end
 
@@ -1034,13 +1245,17 @@ end
 local function renderEsp()
     if not drawingOk then return end
     local used = 0
+    local viewport = cam.ViewportSize
+    local boxColor = palColor(CFG.ColorBox)
+    local textColor = palColor(CFG.ColorText)
+    local lineColor = palColor(CFG.ColorSnapline)
 
     for _, entry in ipairs(State.espList) do
         local head = entry.head or entry.aim
-        local root = entry.root or entry.aim or entry.head
-        if head and root then
+        local bodyPart = entry.root or entry.aim or entry.head
+        if head and bodyPart then
             local headScreen, headOn = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
-            local footScreen, footOn = cam:WorldToViewportPoint(root.Position - Vector3.new(0, 2.2, 0))
+            local footScreen, footOn = cam:WorldToViewportPoint(bodyPart.Position - Vector3.new(0, 2.2, 0))
             if headOn and footOn and headScreen.Z > 0 and footScreen.Z > 0 then
                 used = used + 1
                 if used <= CFG.MaxTargets then
@@ -1049,22 +1264,63 @@ local function renderEsp()
                         local height = math.abs(footScreen.Y - headScreen.Y)
                         local width = height * 0.5
                         local top = math.min(headScreen.Y, footScreen.Y)
+                        local left = headScreen.X - width * 0.5
+
                         box.square.Size = Vector2.new(width, height)
-                        box.square.Position = Vector2.new(headScreen.X - width * 0.5, top)
-                        box.square.Color = COL.accent
+                        box.square.Position = Vector2.new(left, top)
+                        box.square.Color = boxColor
                         box.square.Filled = CFG.BoxFill
                         box.square.Transparency = CFG.BoxFill and 0.7 or 1
                         box.square.Visible = CFG.Esp
-                        box.text.Text = string.format("%s  %dm", entry.name, math.floor(entry.distance / 3.571))
+
+                        -- barre de vie, proportion Humanoid
+                        local humanoid = entry.character and entry.character:FindFirstChildOfClass("Humanoid")
+                        local health = humanoid and humanoid.Health or 100
+                        local maxHealth = math.max(humanoid and humanoid.MaxHealth or 100, 1)
+                        local ratio = clamp(health / maxHealth, 0, 1)
+                        local barX = left - 5
+                        box.barBg.Size = Vector2.new(3, height)
+                        box.barBg.Position = Vector2.new(barX, top)
+                        box.barBg.Visible = CFG.Esp and CFG.EspHealth
+                        box.barFill.Size = Vector2.new(3, height * ratio)
+                        box.barFill.Position = Vector2.new(barX, top + height * (1 - ratio))
+                        if ratio > 0.6 then
+                            box.barFill.Color = Color3.fromRGB(96, 220, 128)
+                        elseif ratio > 0.3 then
+                            box.barFill.Color = Color3.fromRGB(235, 205, 96)
+                        else
+                            box.barFill.Color = Color3.fromRGB(235, 90, 90)
+                        end
+                        box.barFill.Visible = CFG.Esp and CFG.EspHealth
+
+                        -- point de tete
+                        box.headDot.Position = Vector2.new(headScreen.X, headScreen.Y)
+                        box.headDot.Color = boxColor
+                        box.headDot.Visible = CFG.Esp and CFG.EspHeadDot
+
+                        -- ligne depuis le bas de l'ecran
+                        box.line.From = Vector2.new(viewport.X * 0.5, viewport.Y)
+                        box.line.To = Vector2.new(headScreen.X, top)
+                        box.line.Color = lineColor
+                        box.line.Visible = CFG.Esp and CFG.EspSnapline
+
+                        -- etiquette : nom et/ou distance, chacun son interrupteur
+                        local parts = {}
+                        if CFG.EspName then parts[#parts + 1] = entry.name end
+                        if CFG.EspDist then
+                            parts[#parts + 1] = string.format("%dm", math.floor(entry.distance / 3.571))
+                        end
+                        box.text.Text = table.concat(parts, "  ")
                         box.text.Position = Vector2.new(headScreen.X, top - 15)
-                        box.text.Visible = CFG.Esp
+                        box.text.Color = textColor
+                        box.text.Visible = CFG.Esp and #parts > 0
                     end
                 end
             end
         end
     end
 
-    for index = used + 1, #boxCache do
+    for index = math.min(used, CFG.MaxTargets) + 1, #boxCache do
         hideBox(index)
     end
 end
@@ -1120,7 +1376,7 @@ local function refreshUi()
         debugBox.Text = table.concat(lines, "\n")
         if os.clock() - (State.lastPrint or 0) > 2.5 then
             State.lastPrint = os.clock()
-            print("[sniper48] " .. table.concat(lines, " | "))
+            print("[freedom] " .. table.concat(lines, " | "))
         end
     end
 
@@ -1162,6 +1418,22 @@ local function isIgnored(character)
     end
     return true
 end
+
+--------------------------------------------------------------------
+-- IGNORE TOGGLE (F5 and the menu button)
+--------------------------------------------------------------------
+local function toggleIgnore()
+    local target = State.target
+    if not (target and target.character) then return end
+    if isIgnored(target.character) then
+        ignored[target.character] = nil
+    else
+        ignored[target.character] = os.clock() + IGNORE_SECONDS
+    end
+end
+
+ignoreRef = toggleIgnore
+dumpWorldRef = dumpWorld
 
 --------------------------------------------------------------------
 -- RENDER LOOP
@@ -1229,8 +1501,8 @@ local function onRender(dt)
     end
 end
 
-pcall(function() RunService:UnbindFromRenderStep("SniperArena48") end)
-RunService:BindToRenderStep("SniperArena48", 201, onRender)
+pcall(function() RunService:UnbindFromRenderStep("Freedom59") end)
+RunService:BindToRenderStep("Freedom59", 201, onRender)
 
 --------------------------------------------------------------------
 -- KEYS
@@ -1268,9 +1540,13 @@ local keyConnection = UIS.InputBegan:Connect(function(input, processed)
     elseif key == Enum.KeyCode.F7 then
         CFG.Debug = not CFG.Debug
         debugBox.Visible = CFG.Debug
-        print("[sniper48] debug " .. (CFG.Debug and "on" or "off"))
+        print("[freedom] debug " .. (CFG.Debug and "on" or "off"))
     elseif key == Enum.KeyCode.F8 then
         dumpWorld()
+    elseif key == Enum.KeyCode.F9 then
+        CFG.EspSnapline = not CFG.EspSnapline
+        for _, paint in ipairs(painters) do paint() end
+        saveConfig()
     end
 end)
 
@@ -1311,12 +1587,15 @@ end)
 -- SHUTDOWN
 --------------------------------------------------------------------
 local function shutdown()
-    pcall(function() RunService:UnbindFromRenderStep("SniperArena48") end)
+    pcall(function() RunService:UnbindFromRenderStep("Freedom59") end)
     pcall(function() keyConnection:Disconnect() end)
     pcall(function() gui:Destroy() end)
     for _, entry in pairs(boxCache) do
-        pcall(function() entry.square:Remove() end)
-        pcall(function() entry.text:Remove() end)
+        for _, item in pairs(entry) do
+            if type(item) == "table" or type(item) == "userdata" then
+                pcall(function() item:Remove() end)
+            end
+        end
     end
     if fovCircle then pcall(function() fovCircle:Remove() end) end
     boxCache = {}
@@ -1324,6 +1603,7 @@ local function shutdown()
 end
 
 _G.SNIPER48 = { shutdown = shutdown, cfg = CFG }
+_G.FREEDOM = { shutdown = shutdown, cfg = CFG }
 
 --------------------------------------------------------------------
 -- START
