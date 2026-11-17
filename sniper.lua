@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v54 (keyless, Luau / Xeno)
+  SNIPER ARENA — v55 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -35,6 +35,10 @@
     - death spots and dead names are only recorded for real players, bots shared one name and killed each other's targeting
     - a dead name is ignored while several models still answer to it
     - F8 dumps every model in the map: name, class, health, transparency, full path
+  v55:
+    - the ESP is built from the raw sweep, not from the aim list: no filter can hide a body any more
+    - a model with only a head, or only a torso, still gets a box and a distance label
+    - bots are judged like bots: only Dead and zero health disqualify them, not Physics or FallingDown
 --------------------------------------------------------------------
 ]]
 
@@ -598,9 +602,13 @@ local function isAlive(character)
     if looksLikeCorpse(character) then return false end
     if isHidden(character) then return false end
     local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local isPlayer = Players:GetPlayerFromCharacter(character) ~= nil
     if humanoid then
         if humanoid.Health <= 0 then return false end
-        if DEAD_STATES[humanoid:GetState()] then return false end
+        local state = humanoid:GetState()
+        if state == Enum.HumanoidStateType.Dead then return false end
+        -- a real player ragdolling is dead; a bot sliding is a bot sliding
+        if isPlayer and DEAD_STATES[state] then return false end
         -- bots often keep a Humanoid but no RootPart bound to it: fall back on the rig
         return hasBodyPart(character) ~= nil
     end
@@ -875,23 +883,7 @@ local function scanTargets()
                     watchDeath(character)
                     -- ESP: everything alive around us, bots included, walls included.
                     -- Only things actually in front of the camera get drawn, nothing behind the head.
-                    local headScreen, headOn = cam:WorldToViewportPoint(aimPart.Position)
-                    if headOn and headScreen.Z > 0
-                        and headScreen.X > -200 and headScreen.X < viewport.X + 200
-                        and headScreen.Y > -200 and headScreen.Y < viewport.Y + 200 then
-                        espList[#espList + 1] = {
-                            character = character,
-                            head = head,
-                            root = rootPart,
-                            aim = aimPart,
-                            name = nameOf(character),
-                            distance = distance,
-                            score = distance,
-                        }
-                        report[#report + 1] = string.format("%s  ·  esp %.0fm", nameOf(character), distance / 3.571)
-                    elseif not CFG.Debug then
-                        -- nothing to say when debug is off
-                    end
+                    -- ESP is built separately, from the raw sweep: see below
 
                     -- Lock-on stays inside the FOV cone and respects line of sight
                     local dir = cam.CFrame.LookVector
@@ -916,6 +908,43 @@ local function scanTargets()
                 end
             end
             end -- nearDeathSpot guard
+        end
+    end
+
+    -- ESP: built from the raw sweep, never from the aim list. A body the aim
+    -- filters reject still gets a box, which is the whole point of an overlay.
+    for _, character in ipairs(State.characters) do
+        if character.Parent and character ~= lp.Character and not isCorpse(character) then
+            local head = character:FindFirstChild("Head")
+            local body = character:FindFirstChild("HumanoidRootPart")
+                or character:FindFirstChild("Torso")
+                or character:FindFirstChild("UpperTorso")
+                or character.PrimaryPart
+            local anchor = head or body
+            if anchor and anchor.Parent then
+                local headHidden = (not head) or head.Transparency >= 0.85
+                local bodyHidden = (not body) or body.Transparency >= 0.85
+                if not (headHidden and bodyHidden) then
+                    local distance = (anchor.Position - cam.CFrame.Position).Magnitude
+                    if distance <= CFG.MaxDist then
+                        local screen, onScreen = cam:WorldToViewportPoint(anchor.Position)
+                        if onScreen and screen.Z > 0
+                            and screen.X > -200 and screen.X < viewport.X + 200
+                            and screen.Y > -200 and screen.Y < viewport.Y + 200 then
+                            espList[#espList + 1] = {
+                                character = character,
+                                head = head or body,
+                                root = body or head,
+                                aim = anchor,
+                                name = nameOf(character),
+                                distance = distance,
+                                score = distance,
+                            }
+                            report[#report + 1] = string.format("%s  ·  esp %.0fm", nameOf(character), distance / 3.571)
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -959,7 +988,8 @@ local function renderEsp()
     local used = 0
 
     for _, entry in ipairs(State.espList) do
-        local head, root = entry.head, entry.root
+        local head = entry.head or entry.aim
+        local root = entry.root or entry.aim or entry.head
         if head and root then
             local headScreen, headOn = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
             local footScreen, footOn = cam:WorldToViewportPoint(root.Position - Vector3.new(0, 2.2, 0))
