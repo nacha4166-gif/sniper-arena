@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v52 (keyless, Luau / Xeno)
+  SNIPER ARENA — v53 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -27,6 +27,10 @@
     - a Humanoid with no RootPart no longer rejects a bot, the rig itself is used
     - corpse clones that copy a dead player's name are refused for 25 s
     - F7 also prints the report to the executor console, and shows the sweep counters
+  v53:
+    - invisible rigs are dropped: a model whose Head and Torso are transparent is not a target
+    - models living inside a corpse/ragdoll/debris folder are dropped as well
+    - this is the "it aims at something invisible" case, not a corpse that stays visible
 --------------------------------------------------------------------
 ]]
 
@@ -547,6 +551,37 @@ local function isDeadName(character)
     return true
 end
 
+local HIDDEN_PARTS = { "Head", "UpperTorso", "Torso", "HumanoidRootPart" }
+local CORPSE_CONTAINERS = { "corpse", "ragdoll", "deadbody", "bodies", "debris" }
+
+local function inCorpseContainer(character)
+    local node = character.Parent
+    local depth = 0
+    while node and node ~= Workspace and depth < 6 do
+        local name = string.lower(tostring(node.Name))
+        for _, word in ipairs(CORPSE_CONTAINERS) do
+            if string.find(name, word, 1, true) then return true end
+        end
+        node = node.Parent
+        depth = depth + 1
+    end
+    return false
+end
+
+-- a body the game hides is still a body. Aiming a box at a transparent rig
+-- looks exactly like locking onto thin air, which is what players report.
+local function isHidden(character)
+    local found = false
+    for _, partName in ipairs(HIDDEN_PARTS) do
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") then
+            found = true
+            if part.Transparency < 0.85 then return false end
+        end
+    end
+    return found
+end
+
 local function hasBodyPart(character)
     return character:FindFirstChild("HumanoidRootPart")
         or character:FindFirstChild("UpperTorso")
@@ -557,6 +592,7 @@ end
 local function isAlive(character)
     if not character or not character.Parent then return false end
     if looksLikeCorpse(character) then return false end
+    if isHidden(character) then return false end
     local humanoid = character:FindFirstChildOfClass("Humanoid")
     if humanoid then
         if humanoid.Health <= 0 then return false end
@@ -760,6 +796,10 @@ local function scanTargets()
             reason = "corpse-name"
         elseif isDeadName(character) then
             reason = "corpse-name-match"
+        elseif inCorpseContainer(character) then
+            reason = "corpse-folder"
+        elseif isHidden(character) then
+            reason = "invisible"
         elseif not humanoid then
             reason = "no-humanoid"
         elseif humanoid.Health <= 0 then
