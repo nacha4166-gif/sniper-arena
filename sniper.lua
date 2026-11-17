@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v56 (keyless, Luau / Xeno)
+  SNIPER ARENA — v57 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -42,6 +42,9 @@
   v56:
     - lock-on on bots: their Humanoid health and state no longer disqualify them, visibility does
     - invisible colliders (glass, triggers) no longer count as cover for line of sight
+  v57:
+    - lock-on is player-only by request: bot rigs never steal the camera
+    - ESP still draws everyone, bots included, through walls
 --------------------------------------------------------------------
 ]]
 
@@ -848,6 +851,7 @@ local function scanTargets()
 
     for _, character in ipairs(State.characters) do
         local reason = nil
+        local isPlayerModel = Players:GetPlayerFromCharacter(character) ~= nil
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         if not character.Parent then
             reason = "gone"
@@ -883,7 +887,8 @@ local function scanTargets()
             else
             totalCount = totalCount + 1
             local aimPart = head or rootPart
-            if aimPart and aimPart.Parent then
+            -- lock-on is for real players only: bot rigs never take a camera lock
+            if isPlayerModel and aimPart and aimPart.Parent then
                 local origin = cam.CFrame.Position
                 local delta = aimPart.Position - origin
                 local distance = delta.Magnitude
