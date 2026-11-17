@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v55 (keyless, Luau / Xeno)
+  SNIPER ARENA — v56 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -39,6 +39,9 @@
     - the ESP is built from the raw sweep, not from the aim list: no filter can hide a body any more
     - a model with only a head, or only a torso, still gets a box and a distance label
     - bots are judged like bots: only Dead and zero health disqualify them, not Physics or FallingDown
+  v56:
+    - lock-on on bots: their Humanoid health and state no longer disqualify them, visibility does
+    - invisible colliders (glass, triggers) no longer count as cover for line of sight
 --------------------------------------------------------------------
 ]]
 
@@ -604,12 +607,13 @@ local function isAlive(character)
     local humanoid = character:FindFirstChildOfClass("Humanoid")
     local isPlayer = Players:GetPlayerFromCharacter(character) ~= nil
     if humanoid then
-        if humanoid.Health <= 0 then return false end
-        local state = humanoid:GetState()
-        if state == Enum.HumanoidStateType.Dead then return false end
-        -- a real player ragdolling is dead; a bot sliding is a bot sliding
-        if isPlayer and DEAD_STATES[state] then return false end
-        -- bots often keep a Humanoid but no RootPart bound to it: fall back on the rig
+        if isPlayer then
+            if humanoid.Health <= 0 then return false end
+            if DEAD_STATES[humanoid:GetState()] then return false end
+            return hasBodyPart(character) ~= nil
+        end
+        -- bots: a visible rig with a body part is a target. Their Humanoid is
+        -- decoration — plenty sit at zero health or in Physics for their whole life.
         return hasBodyPart(character) ~= nil
     end
     -- no Humanoid at all: some games ship bots as plain rigs, head + body only
@@ -690,7 +694,11 @@ local function canSee(character, targetPart)
     local origin = cam.CFrame.Position
     local result = Workspace:Raycast(origin, targetPart.Position - origin, rayParams)
     if not result then return true end
-    return result.Instance:IsDescendantOf(character)
+    if result.Instance:IsDescendantOf(character) then return true end
+    -- invisible colliders are not cover: glass walls and trigger boxes must not
+    -- block a line of sight that the eye clearly has
+    if result.Instance:IsA("BasePart") and result.Instance.Transparency >= 0.85 then return true end
+    return false
 end
 
 --------------------------------------------------------------------
