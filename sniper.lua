@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v53 (keyless, Luau / Xeno)
+  SNIPER ARENA — v54 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -31,6 +31,10 @@
     - invisible rigs are dropped: a model whose Head and Torso are transparent is not a target
     - models living inside a corpse/ragdoll/debris folder are dropped as well
     - this is the "it aims at something invisible" case, not a corpse that stays visible
+  v54:
+    - death spots and dead names are only recorded for real players, bots shared one name and killed each other's targeting
+    - a dead name is ignored while several models still answer to it
+    - F8 dumps every model in the map: name, class, health, transparency, full path
 --------------------------------------------------------------------
 ]]
 
@@ -744,10 +748,49 @@ local function sweepCharacters()
         end
     end
 
+    local nameCount = {}
+    for _, model in ipairs(found) do
+        local name = model.Name
+        nameCount[name] = (nameCount[name] or 0) + 1
+    end
+    State.nameCount = nameCount
     State.sweepInfo = string.format("sweep %d models (%d humanoid, %d rigs)", #found, humanoids, rigs)
     State.characters = found
     State.lastSweep = os.clock()
     return found
+end
+
+-- F8: the whole map, unfiltered. Every model holding a Humanoid or a body part
+-- gets one line: name, class, health, transparency, full path. Nothing is judged.
+function dumpWorld()
+    local seen, rows = {}, {}
+    local ok = pcall(function()
+        for _, item in ipairs(Workspace:GetDescendants()) do
+            local candidate = item:IsA("Humanoid")
+                or (item:IsA("BasePart") and (item.Name == "Head"
+                    or item.Name == "Torso" or item.Name == "UpperTorso"))
+            if candidate then
+                local model = item.Parent
+                if model and not seen[model] then
+                    seen[model] = true
+                    local humanoid = model:FindFirstChildOfClass("Humanoid")
+                    local head = model:FindFirstChild("Head")
+                    local torso = model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
+                    rows[#rows + 1] = string.format("%s [%s] hp=%s transp=%s/%s path=%s",
+                        model.Name,
+                        model.ClassName,
+                        humanoid and tostring(math.floor(humanoid.Health)) or "-",
+                        head and string.format("%.2f", head.Transparency) or "-",
+                        torso and string.format("%.2f", torso.Transparency) or "-",
+                        model:GetFullName())
+                end
+            end
+        end
+    end)
+    print(string.format("[sniper48] dump %d model(s)%s", #rows, ok and "" or " — scan error"))
+    for index = 1, math.min(#rows, 40) do
+        print("[sniper48] " .. rows[index])
+    end
 end
 
 local function watchDeath(character)
@@ -758,9 +801,13 @@ local function watchDeath(character)
         return humanoid.Died:Connect(function()
             State.deathHooks[character] = nil
             markCorpse(character)
-            markDeadName(character.Name)
-            local dyingRoot = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
-            markDeathSpot(dyingRoot and dyingRoot.Position)
+            -- only a real player leaves a corpse worth remembering: bots die by the
+            -- dozen in the same spot, and their shared names poison every filter
+            if Players:GetPlayerFromCharacter(character) then
+                markDeadName(character.Name)
+                local dyingRoot = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
+                markDeathSpot(dyingRoot and dyingRoot.Position)
+            end
             if State.target and State.target.character == character then
                 State.target = nil
                 State.lastScan = 0
@@ -794,7 +841,7 @@ local function scanTargets()
             reason = "corpse-memory"
         elseif looksLikeCorpse(character) then
             reason = "corpse-name"
-        elseif isDeadName(character) then
+        elseif isDeadName(character) and (State.nameCount[character.Name] or 0) <= 1 then
             reason = "corpse-name-match"
         elseif inCorpseContainer(character) then
             reason = "corpse-folder"
@@ -1144,6 +1191,8 @@ local keyConnection = UIS.InputBegan:Connect(function(input, processed)
         CFG.Debug = not CFG.Debug
         debugBox.Visible = CFG.Debug
         print("[sniper48] debug " .. (CFG.Debug and "on" or "off"))
+    elseif key == Enum.KeyCode.F8 then
+        dumpWorld()
     end
 end)
 
