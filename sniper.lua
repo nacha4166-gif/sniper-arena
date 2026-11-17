@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  SNIPER ARENA — v50 (keyless, Luau / Xeno)
+  SNIPER ARENA — v51 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -19,6 +19,9 @@
     - ESP has its own list: everything alive, walls included, no FOV cone, bots included
     - lock-on keeps its FOV cone and line-of-sight rule, separate from the ESP
     - corpses filtered on name, Humanoid state, lost RootPart and death spots
+  v51:
+    - F7 debug overlay: every model in the map, with the reason it was kept or skipped
+    - "dummy" removed from the corpse name filter, it was hiding bots named Dummy
 --------------------------------------------------------------------
 ]]
 
