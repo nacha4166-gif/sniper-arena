@@ -1,6 +1,6 @@
 --[[
 --------------------------------------------------------------------
-  FREEDOM — v59 (keyless, Luau / Xeno)
+  FREEDOM — v60 (keyless, Luau / Xeno)
   Improvements over v47:
     - frame-rate independent aim smoothing (no more speed tied to FPS)
     - ESP boxes sized from real head/foot projection, distance in the label
@@ -56,6 +56,15 @@
     - health bar shaded green, amber, red on the Humanoid ratio
     - config file renamed freedom.json, old sniper48.json still read once
     - F9 toggles the snapline, F5 ignores the current target
+  v60:
+    - round two starts clean: a respawn wipes that player's corpse timer, dead
+      name and the death spots, so the ESP finds them on the next frame
+    - a living player is never a corpse, whatever the heuristics believe
+    - spawn grace: a body that just appeared is never filtered as dead
+    - sweep turns fast (0.25 s) for three seconds after any respawn, and
+      whenever the sweep holds fewer bodies than the server has players
+    - death-spot radius 6 -> 3 studs, it was eating fresh spawns on small maps
+    - corpse and spawn tables are weak-keyed, no leak over a long session
 --------------------------------------------------------------------
 ]]
 
@@ -97,10 +106,12 @@ local CFG = {
     Allies      = {},     -- exact names to treat as teammates, e.g. { "FriendName" }
     Debug       = false,
     UiVisible   = true,
+    Mini        = false,   -- panel folded down to a chip, ESP keeps drawing
     ScanFast    = 0.10,
     ScanSlow    = 0.30,
     MaxTargets  = 40,
     BotScan     = 1.5,
+    SweepFast   = 0.25,
     CorpseHold  = 20,
 }
 
@@ -209,8 +220,8 @@ local function label(parent, text, size, bold, color)
     return l
 end
 
--- late-bound hooks: the ignore toggle and the dump live further down the file
-local ignoreRef, dumpWorldRef
+-- late-bound hooks: the ignore toggle, the dump and the fold live further down
+local ignoreRef, dumpWorldRef, applyMiniRef
 
 local root = Instance.new("Frame")
 root.Name = "FD_Main"
@@ -247,14 +258,31 @@ title.Size = UDim2.new(1, -150, 0, 38)
 
 local chip = Instance.new("Frame")
 chip.Size = UDim2.fromOffset(104, 20)
-chip.Position = UDim2.new(1, -116, 0, 9)
+chip.Position = UDim2.new(1, -146, 0, 9)
 chip.BackgroundColor3 = COL.card
 chip.BorderSizePixel = 0
 chip.Parent = header
 corner(chip, 10)
-local chipText = label(chip, "v59  MANUAL", 9, true, COL.dim)
+local chipText = label(chip, "v60  MANUAL", 9, true, COL.dim)
 chipText.Size = UDim2.fromScale(1, 1)
 chipText.TextXAlignment = Enum.TextXAlignment.Center
+
+-- fold button : the whole panel collapses to a chip, the ESP and the lock keep
+-- running. Same idea as the desktop build's menu size key.
+local miniBtn = Instance.new("TextButton")
+miniBtn.Name = "FD_Fold"
+miniBtn.Size = UDim2.fromOffset(20, 20)
+miniBtn.Position = UDim2.new(1, -26, 0, 9)
+miniBtn.BackgroundColor3 = COL.card
+miniBtn.BackgroundTransparency = 0.2
+miniBtn.BorderSizePixel = 0
+miniBtn.AutoButtonColor = false
+miniBtn.Text = ""
+miniBtn.Parent = header
+corner(miniBtn, 6)
+local miniGlyph = label(miniBtn, "-", 13, true, COL.dim)
+miniGlyph.Size = UDim2.fromScale(1, 1)
+miniGlyph.TextXAlignment = Enum.TextXAlignment.Center
 
 -- status card
 local card = Instance.new("Frame")
@@ -610,6 +638,7 @@ makeButton(pageConfig, 1, "Save Config", function() saveConfig() end)
 makeButton(pageConfig, 2, "Reload Config", function()
     loadConfig()
     for _, paint in ipairs(painters) do paint() end
+    if applyMiniRef then applyMiniRef() end
 end)
 makeButton(pageConfig, 3, "Reset Defaults", function()
     CFG.LockOn, CFG.Esp = true, true
@@ -619,7 +648,9 @@ makeButton(pageConfig, 3, "Reset Defaults", function()
     CFG.EspHeadDot, CFG.EspSnapline = true, false
     CFG.ColorBox, CFG.ColorText, CFG.ColorSnapline = 1, 6, 3
     CFG.Fov, CFG.Smooth, CFG.MaxDist = 35, 14, 4000
+    CFG.Mini = false
     for _, paint in ipairs(painters) do paint() end
+    if applyMiniRef then applyMiniRef() end
     saveConfig()
 end, COL.danger)
 
@@ -628,10 +659,36 @@ versionLine.Size = UDim2.new(1, 0, 0, 16)
 versionLine.LayoutOrder = 4
 
 -- footer + debug
-local footer = label(root, "F1 hide  F2 lock  F3 esp  F5 ignore  F6 fov  F7 debug  F8 dump  F9 snapline", 10, false, COL.dim)
+local footer = label(root, "F1 hide  F2 lock  F3 esp  F5 ignore  F6 fov  F7 debug  F8 dump  F9 snap  F10 fold", 10, false, COL.dim)
 footer.Position = UDim2.new(0, 12, 1, -22)
 footer.Size = UDim2.new(1, -24, 0, 14)
 footer.TextXAlignment = Enum.TextXAlignment.Center
+
+-- F10 or the corner button : full panel <-> chip
+local FULL_SIZE = UDim2.fromOffset(432, 452)
+local MINI_SIZE = UDim2.fromOffset(176, 38)
+
+local function applyMini()
+    local mini = CFG.Mini and true or false
+    root.Size = mini and MINI_SIZE or FULL_SIZE
+    card.Visible = not mini
+    sidebar.Visible = not mini
+    content.Visible = not mini
+    footer.Visible = not mini
+    chip.Visible = not mini
+    title.Size = UDim2.new(1, mini and -40 or -190, 0, 38)
+    miniGlyph.Text = mini and "+" or "-"
+end
+
+local function toggleMini()
+    CFG.Mini = not CFG.Mini
+    applyMini()
+    saveConfig()
+end
+
+miniBtn.MouseButton1Click:Connect(toggleMini)
+applyMiniRef = applyMini
+applyMini()
 
 local debugBox = label(pageMisc, "", 10, false, COL.dim)
 debugBox.Size = UDim2.new(1, 0, 0, 0)
@@ -761,6 +818,31 @@ local function looksLikeCorpse(character)
     return false
 end
 
+-- Round two starts with everybody respawning on the ground where round one
+-- ended. Every filter below has to know that a body which just appeared is a
+-- live body, not a corpse, or the ESP spends the first seconds of the round
+-- looking at nothing.
+local spawnedAt = setmetatable({}, { __mode = "k" })
+local SPAWN_GRACE = 4.0
+
+local function markSpawned(character)
+    if character then spawnedAt[character] = os.clock() end
+end
+
+local function recentlySpawned(character)
+    local at = spawnedAt[character]
+    return at ~= nil and (os.clock() - at) < SPAWN_GRACE
+end
+
+-- a real player's character with health left is alive, whatever a heuristic
+-- believes about its name, its state or the spot it stands on
+local function isLivePlayer(character)
+    local player = Players:GetPlayerFromCharacter(character)
+    if not player then return false end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil and humanoid.Health > 0
+end
+
 -- a corpse clone keeps the name of the player it came from. Remember it and
 -- refuse any model carrying that name, since no living body answers to it.
 local deadNames = {}
@@ -770,6 +852,7 @@ local function markDeadName(name)
 end
 
 local function isDeadName(character)
+    if recentlySpawned(character) or isLivePlayer(character) then return false end
     if Players:GetPlayerFromCharacter(character) then return false end
     local name = character.Name
     if not name then return false end
@@ -829,7 +912,7 @@ local function isAlive(character)
     if humanoid then
         if isPlayer then
             if humanoid.Health <= 0 then return false end
-            if DEAD_STATES[humanoid:GetState()] then return false end
+            if DEAD_STATES[humanoid:GetState()] and not recentlySpawned(character) then return false end
             return hasBodyPart(character) ~= nil
         end
         -- bots: a visible rig with a body part is a target. Their Humanoid is
@@ -889,13 +972,19 @@ local function isAlly(character)
     return false
 end
 
-local corpses = {}
+local corpses = setmetatable({}, { __mode = "k" })
 
 local function markCorpse(character, seconds)
-    if character then corpses[character] = os.clock() + (seconds or CFG.CorpseHold) end
+    if not character then return end
+    if isLivePlayer(character) then return end      -- never bury a live player
+    corpses[character] = os.clock() + (seconds or CFG.CorpseHold)
 end
 
 local function isCorpse(character)
+    if recentlySpawned(character) or isLivePlayer(character) then
+        corpses[character] = nil
+        return false
+    end
     local expiry = corpses[character]
     if not expiry then return false end
     if not character.Parent or os.clock() > expiry then
@@ -915,15 +1004,22 @@ local function markDeathSpot(position)
     while #deathSpots > 30 do table.remove(deathSpots, 1) end
 end
 
+local function clearDeathSpots()
+    deathSpots = {}
+end
+
 local function nearDeathSpot(character, rootPart)
     if not rootPart then return false end
+    -- a live player standing where someone died is not a corpse, and a fresh
+    -- spawn on a small arena lands close enough to trip the old 6 stud radius
+    if recentlySpawned(character) or isLivePlayer(character) then return false end
     local now = os.clock()
     local where = rootPart.Position
     for index = #deathSpots, 1, -1 do
         local spot = deathSpots[index]
         if now - spot.at > 8 then
             table.remove(deathSpots, index)
-        elseif (spot.pos - where).Magnitude <= 6 then
+        elseif (spot.pos - where).Magnitude <= 3 then
             return true
         end
     end
@@ -966,6 +1062,9 @@ local State = {
     lastSweep = 0,
     characters = {},
     deathHooks = {},
+    nameCount = {},
+    sweepInfo = "sweep -",
+    fastUntil = 0,
 }
 
 --------------------------------------------------------------------
@@ -1010,6 +1109,10 @@ local function sweepCharacters()
         if not ok then
             State.errors = State.errors + 1
         end
+    end
+
+    for _, model in ipairs(found) do
+        if not spawnedAt[model] then spawnedAt[model] = os.clock() end
     end
 
     local nameCount = {}
@@ -1083,7 +1186,13 @@ end
 
 local function scanTargets()
     local now = os.clock()
-    if now - State.lastSweep >= CFG.BotScan then
+    -- right after a respawn the roster is being rebuilt: sweep fast for a few
+    -- seconds instead of waiting the lazy 1.5 s. Same when the sweep holds
+    -- fewer bodies than the server has players.
+    local expected = math.max(#Players:GetPlayers() - 1, 0)
+    local hungry = now < State.fastUntil or #State.characters < expected
+    local sweepEvery = hungry and CFG.SweepFast or CFG.BotScan
+    if now - State.lastSweep >= sweepEvery then
         sweepCharacters()
     end
 
@@ -1117,7 +1226,7 @@ local function scanTargets()
             reason = "no-humanoid"
         elseif humanoid.Health <= 0 then
             reason = "hp0"
-        elseif DEAD_STATES[humanoid:GetState()] then
+        elseif DEAD_STATES[humanoid:GetState()] and not recentlySpawned(character) then
             reason = "state"
         elseif not humanoid.RootPart or not humanoid.RootPart.Parent then
             reason = "no-root"
@@ -1436,6 +1545,36 @@ ignoreRef = toggleIgnore
 dumpWorldRef = dumpWorld
 
 --------------------------------------------------------------------
+-- RESPAWN RESET
+--------------------------------------------------------------------
+-- Round two must not inherit round one: a respawn drops that player's corpse
+-- timer, dead name and the death spots, then asks for an immediate sweep so
+-- the boxes and the lock find them on the next frame.
+local function onRespawn(player, character)
+    if not character then return end
+    markSpawned(character)
+    corpses[character] = nil
+    deadNames[player.Name] = nil
+    if player.DisplayName and #player.DisplayName > 0 then
+        deadNames[player.DisplayName] = nil
+    end
+    clearDeathSpots()
+    State.lastSweep = 0
+    State.lastScan = 0
+    State.fastUntil = os.clock() + 3.0
+end
+
+local function hookPlayer(player)
+    player.CharacterAdded:Connect(function(character)
+        onRespawn(player, character)
+    end)
+    if player.Character then markSpawned(player.Character) end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do hookPlayer(player) end
+Players.PlayerAdded:Connect(hookPlayer)
+
+--------------------------------------------------------------------
 -- RENDER LOOP
 --------------------------------------------------------------------
 local function onRender(dt)
@@ -1547,6 +1686,8 @@ local keyConnection = UIS.InputBegan:Connect(function(input, processed)
         CFG.EspSnapline = not CFG.EspSnapline
         for _, paint in ipairs(painters) do paint() end
         saveConfig()
+    elseif key == Enum.KeyCode.F10 then
+        toggleMini()
     end
 end)
 
